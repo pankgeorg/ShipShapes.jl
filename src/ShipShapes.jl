@@ -3,7 +3,7 @@ module ShipShapes
 using WaterLily
 using StaticArrays
 
-export Wigley, wigley_volume
+export Wigley, wigley_volume, TabulatedHull, sample_sdf, tabulated_sdf
 
 """
     wigley_sdf(p, L, B, T)
@@ -65,5 +65,118 @@ end
 Analytic displaced-water volume of the Wigley hull: `4 L B T / 9`.
 """
 wigley_volume(L, B, T) = 4 * L * B * T / 9
+
+# ----------------------------------------------------------------------------
+# Tabulated SDF — for hulls without a closed-form distance (DTC, KCS, …)
+# ----------------------------------------------------------------------------
+
+"""
+    TabulatedHull{T,N}
+
+A signed-distance function sampled on a uniform 3D grid. Use this when
+you have a hull whose surface is defined by a triangle mesh or a set of
+sample points, but where evaluating the SDF analytically is expensive.
+
+# Fields
+- `grid` — `Array{T,3}` of distance values, with `grid[i,j,k]` =
+  SDF at world position `origin + spacing .* (i-1, j-1, k-1)`.
+- `origin` — `SVector{3,T}`, world-frame coordinates of `grid[1,1,1]`.
+- `spacing` — `SVector{3,T}`, grid step in each axis.
+
+Trilinear interpolation is used for queries between sample points.
+Outside the sampled box, the SDF returns a positive value (clamped
+to "far outside") — *do not* place a body so that its surface goes
+through the SDF box boundary.
+"""
+struct TabulatedHull{T, A<:AbstractArray{T,3}}
+    grid    :: A
+    origin  :: SVector{3,T}
+    spacing :: SVector{3,T}
+end
+
+function TabulatedHull(grid::AbstractArray{T,3},
+                       origin, spacing) where T
+    o = SVector{3,T}(origin)
+    s = SVector{3,T}(spacing)
+    TabulatedHull{T, typeof(grid)}(grid, o, s)
+end
+
+# Trilinear interpolation, returning a value with the same type as the
+# input coordinate (so AutoBody / ForwardDiff Duals stay differentiable).
+@inline function (h::TabulatedHull{T})(p, _t = 0) where T
+    nx, ny, nz = size(h.grid)
+    Tin = promote_type(eltype(p), T)
+    # World → grid index (continuous)
+    gx = (p[1] - h.origin[1]) / h.spacing[1]
+    gy = (p[2] - h.origin[2]) / h.spacing[2]
+    gz = (p[3] - h.origin[3]) / h.spacing[3]
+    # Clamp queries outside the grid to the boundary — return a large
+    # positive value so BDIM treats those cells as "far outside".
+    if gx < 0 || gy < 0 || gz < 0 || gx > nx-1 || gy > ny-1 || gz > nz-1
+        # signed distance to the bounding box, lower-bounded by 1.
+        return Tin(1.0)
+    end
+    i = clamp(floor(Int, gx), 0, nx-2)
+    j = clamp(floor(Int, gy), 0, ny-2)
+    k = clamp(floor(Int, gz), 0, nz-2)
+    fx = gx - i; fy = gy - j; fz = gz - k
+    i += 1; j += 1; k += 1                    # 1-indexed
+    g = h.grid
+    @inbounds c000 = Tin(g[i,   j,   k  ])
+    @inbounds c100 = Tin(g[i+1, j,   k  ])
+    @inbounds c010 = Tin(g[i,   j+1, k  ])
+    @inbounds c110 = Tin(g[i+1, j+1, k  ])
+    @inbounds c001 = Tin(g[i,   j,   k+1])
+    @inbounds c101 = Tin(g[i+1, j,   k+1])
+    @inbounds c011 = Tin(g[i,   j+1, k+1])
+    @inbounds c111 = Tin(g[i+1, j+1, k+1])
+    c00 = c000 * (1 - fx) + c100 * fx
+    c01 = c001 * (1 - fx) + c101 * fx
+    c10 = c010 * (1 - fx) + c110 * fx
+    c11 = c011 * (1 - fx) + c111 * fx
+    c0  = c00  * (1 - fy) + c10  * fy
+    c1  = c01  * (1 - fy) + c11  * fy
+    return c0 * (1 - fz) + c1 * fz
+end
+
+"""
+    sample_sdf(sdf::Function, origin, spacing, dims; T=Float32)
+
+Tabulate an analytic SDF on a uniform grid. Returns a `TabulatedHull`.
+`origin`, `spacing` are `NTuple{3}`; `dims` is `NTuple{3,Int}` giving the
+sample count along each axis.
+
+```julia
+hull_analytic = Wigley(L=L, B=B, T=T)
+hull_table = sample_sdf((x,t) -> ShipShapes.wigley_sdf(x, L, B, T),
+                        (-L/2 - L/10, -B - 0.1, -T - 0.1),  # origin
+                        (1.2L/63, 2.2B/31, 1.2T/31),         # spacing
+                        (64, 32, 32))
+```
+"""
+function sample_sdf(sdf, origin, spacing, dims::NTuple{3,Int}; T::Type=Float32)
+    nx, ny, nz = dims
+    o = SVector{3,T}(origin)
+    s = SVector{3,T}(spacing)
+    grid = Array{T,3}(undef, nx, ny, nz)
+    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
+        x = SVector{3,T}(o[1] + s[1] * (i-1),
+                         o[2] + s[2] * (j-1),
+                         o[3] + s[3] * (k-1))
+        grid[i, j, k] = T(sdf(x, T(0)))
+    end
+    return TabulatedHull(grid, o, s)
+end
+
+"""
+    tabulated_sdf(table::TabulatedHull; map=(x,t)->x)
+
+Convert a `TabulatedHull` into a `WaterLily.AutoBody` ready for use in
+a Simulation. `map` is the standard WaterLily coordinate-mapping
+function.
+"""
+function tabulated_sdf(table::TabulatedHull; map=(x,t)->x)
+    WaterLily.AutoBody((x, t) -> table(x, t), map)
+end
 
 end # module

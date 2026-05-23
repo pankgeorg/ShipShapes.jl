@@ -78,4 +78,48 @@ using StaticArrays
         @test hull.sdf(SVector(0.0, 0.5, -0.05), 0.0) > 0
     end
 
+    @testset "TabulatedHull: sample analytic Wigley and re-evaluate" begin
+        L, B, T = 2.5, 0.25, 0.156
+        ana = (x, t) -> wigley_sdf(x, L, B, T)
+
+        # Sample box: 1.4× analytic extent
+        ox, oy, oz = -0.7 * L, -0.7 * B, -1.4 * T
+        spx = 1.4 * L / 99
+        spy = 1.4 * B / 49
+        spz = 1.4 * T / 49
+        table = sample_sdf(ana, (ox, oy, oz), (spx, spy, spz), (100, 50, 50);
+                           T = Float64)
+
+        # At sample-aligned points the value should be bit-identical
+        for (ig, jg, kg) in [(20, 25, 25), (50, 10, 15), (80, 40, 35)]
+            x = SVector(ox + ig * spx, oy + jg * spy, oz + kg * spz)
+            @test isapprox(table(x, 0.0), ana(x, 0.0); atol=1e-12)
+        end
+
+        # At interpolation points the value should match analytic within
+        # second-order interpolation error.
+        for (ig, jg, kg) in [(20.5, 25.5, 25.5), (50.5, 10.5, 15.5)]
+            x = SVector(ox + ig * spx, oy + jg * spy, oz + kg * spz)
+            d_tab = table(x, 0.0)
+            d_ana = ana(x, 0.0)
+            @test isapprox(d_tab, d_ana; atol = 0.02)  # ~half a cell tolerance
+        end
+
+        # Outside the sample box → clamped to "far outside"
+        x_far = SVector(10.0, 0.0, 0.0)
+        @test table(x_far, 0.0) > 0
+    end
+
+    @testset "TabulatedHull: tabulated_sdf wraps as AutoBody" begin
+        L, B, T = 2.5, 0.25, 0.156
+        ana = (x, t) -> wigley_sdf(x, L, B, T)
+        table = sample_sdf(ana, (-1.5, -0.2, -0.25),
+                           (3.0/49, 0.4/19, 0.3/19), (50, 20, 20))
+        hull = tabulated_sdf(table)
+        @test hull !== nothing
+        # Interior point — table interpolates close to analytic
+        x_in = SVector(0.0, 0.0, -0.05)
+        @test hull.sdf(x_in, 0.0) ≈ ana(x_in, 0.0) atol=0.02
+    end
+
 end
