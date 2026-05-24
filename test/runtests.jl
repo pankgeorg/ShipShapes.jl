@@ -122,6 +122,24 @@ using StaticArrays
         @test hull.sdf(x_in, 0.0) ≈ ana(x_in, 0.0) atol=0.02
     end
 
+    @testset "Wigley body runs in a WaterLily Simulation" begin
+        # End-to-end: build a Simulation with a Wigley body and confirm
+        # a few mom_step!s don't blow up. Smoke-level proof that the
+        # SDF is BDIM-compatible.
+        using WaterLily
+        L_c = 24f0; B_c = 6f0; T_c = 4f0
+        hull_xc = 16f0; hull_yc = 16f0; hull_zc = 16f0
+        hull_map = (x, t) -> SVector(x[1] - hull_xc, x[2] - hull_yc, x[3] - hull_zc)
+        hull = Wigley(; L = L_c, B = B_c, T = T_c, map = hull_map)
+        sim = WaterLily.Simulation((48, 32, 32), (1f0, 0f0, 0f0), L_c;
+            T = Float32, body = hull, Δt = 0.25f0, ϵ = 1, U = 1f0)
+        for _ in 1:5
+            WaterLily.mom_step!(sim.flow, sim.pois)
+        end
+        @test isfinite(maximum(abs, sim.flow.u))
+        @test maximum(abs, sim.flow.u) < 5f0   # well-bounded
+    end
+
     @testset "wigley_sdf gradient ≈ 1 (first-order Eikonal)" begin
         # The Eikonal-normalised SDF should have |∇φ| ≈ 1 to first
         # order; second-order curvature terms can push it a few %
