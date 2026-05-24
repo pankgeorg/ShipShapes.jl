@@ -25,10 +25,19 @@ is suitable for use with `AutoBody(wigley_sdf_closure)`.
     x, y, z = p[1], p[2], p[3]
     xc = clamp(x, -L/2, L/2)
     zc = clamp(z, -T, 0)
-    half_beam = (B/2) * (1 - (2xc/L)^2) * (1 - (zc/T)^2)
+    fx = 1 - (2xc/L)^2          # 1 at midship, 0 at bow/stern
+    fz = 1 - (zc/T)^2           # 1 at waterline, 0 at keel
+    half_beam = (B/2) * fx * fz
     in_box = (-L/2 ≤ x ≤ L/2) & (-T ≤ z ≤ 0)
     if in_box
-        return abs(y) - half_beam
+        # Eikonal-normalised SDF: divide the y-axis distance to the
+        # surface by |∇half_beam_extended|, where the gradient lives in
+        # all three directions because the surface curves in x and z.
+        # ∂half_beam/∂x = -2B·x/L² · fz,  ∂half_beam/∂z = -B·z/T² · fx.
+        dhdx = -2 * B * xc / (L^2) * fz
+        dhdz = -B * zc / (T^2) * fx
+        gnorm = sqrt(1 + dhdx^2 + dhdz^2)
+        return (abs(y) - half_beam) / gnorm
     else
         y_surf = clamp(y, -half_beam, half_beam)
         dx = x - xc

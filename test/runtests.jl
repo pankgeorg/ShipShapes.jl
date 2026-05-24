@@ -122,4 +122,25 @@ using StaticArrays
         @test hull.sdf(x_in, 0.0) ≈ ana(x_in, 0.0) atol=0.02
     end
 
+    @testset "wigley_sdf gradient ≈ 1 (first-order Eikonal)" begin
+        # The Eikonal-normalised SDF should have |∇φ| ≈ 1 to first
+        # order; second-order curvature terms can push it a few %
+        # above 1. Check several interior points and require |∇φ| < 1.2.
+        L, B, T = 3.0, 0.4, 0.3
+        h = 1e-3
+        pts = (SVector(0.0, 0.05, -0.05),    # close to midship, near waterline
+               SVector(0.0, 0.05, -0.15),    # midship, mid-depth
+               SVector(0.5, 0.05, -0.10))    # 1/3 from bow
+        for p in pts
+            fx = (ShipShapes.wigley_sdf(SVector(p[1]+h, p[2], p[3]), L, B, T) -
+                  ShipShapes.wigley_sdf(SVector(p[1]-h, p[2], p[3]), L, B, T)) / (2h)
+            fy = (ShipShapes.wigley_sdf(SVector(p[1], p[2]+h, p[3]), L, B, T) -
+                  ShipShapes.wigley_sdf(SVector(p[1], p[2]-h, p[3]), L, B, T)) / (2h)
+            fz = (ShipShapes.wigley_sdf(SVector(p[1], p[2], p[3]+h), L, B, T) -
+                  ShipShapes.wigley_sdf(SVector(p[1], p[2], p[3]-h), L, B, T)) / (2h)
+            g = sqrt(fx^2 + fy^2 + fz^2)
+            @test 0.85 ≤ g ≤ 1.20
+        end
+    end
+
 end
