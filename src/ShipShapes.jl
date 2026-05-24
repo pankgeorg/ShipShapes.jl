@@ -110,11 +110,23 @@ end
     gx = (p[1] - h.origin[1]) / h.spacing[1]
     gy = (p[2] - h.origin[2]) / h.spacing[2]
     gz = (p[3] - h.origin[3]) / h.spacing[3]
-    # Clamp queries outside the grid to the boundary — return a large
-    # positive value so BDIM treats those cells as "far outside".
+    # Outside the tabulation box: return a continuous distance-to-box plus
+    # a one-cell margin so the SDF stays C0 across the box face. Returning a
+    # constant (the old behaviour) made BDIM's ∇sdf finite-difference see a
+    # spurious surface at the box boundary.
     if gx < 0 || gy < 0 || gz < 0 || gx > nx-1 || gy > ny-1 || gz > nz-1
-        # signed distance to the bounding box, lower-bounded by 1.
-        return Tin(1.0)
+        dx = max(zero(Tin), Tin(-gx), Tin(gx - (nx - 1))) * Tin(h.spacing[1])
+        dy = max(zero(Tin), Tin(-gy), Tin(gy - (ny - 1))) * Tin(h.spacing[2])
+        dz = max(zero(Tin), Tin(-gz), Tin(gz - (nz - 1))) * Tin(h.spacing[3])
+        d_box = sqrt(dx*dx + dy*dy + dz*dz)
+        # Anchor at the (positive) value on the nearest face — the
+        # tabulation is supposed to have valid SDF values out to its
+        # boundary, so reading the corner approximates the face SDF.
+        i = clamp(round(Int, gx) + 1, 1, nx)
+        j = clamp(round(Int, gy) + 1, 1, ny)
+        k = clamp(round(Int, gz) + 1, 1, nz)
+        @inbounds face_val = Tin(h.grid[i, j, k])
+        return face_val + d_box
     end
     i = clamp(floor(Int, gx), 0, nx-2)
     j = clamp(floor(Int, gy), 0, ny-2)
