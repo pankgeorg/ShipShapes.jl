@@ -122,6 +122,36 @@ using StaticArrays
         @test hull.sdf(x_in, 0.0) ≈ ana(x_in, 0.0) atol=0.02
     end
 
+    @testset "Containership hull SDF + volume" begin
+        L, B, T = 5.0, 0.7, 0.3
+        # Inside the parallel midbody, half-beam = B/2 everywhere
+        @test ShipShapes.containership_sdf(SVector(0.0, 0.0, -T/2), L, B, T) < 0
+        @test ShipShapes.containership_sdf(SVector(0.0, 0.4, -T/2), L, B, T) > 0
+        # At bow (s=1) half-beam → 0
+        @test ShipShapes.containership_sdf(SVector(L/2, 0.0, -T/2), L, B, T) ≈ 0 atol=1e-9
+        @test ShipShapes.containership_sdf(SVector(-L/2, 0.0, -T/2), L, B, T) ≈ 0 atol=1e-9
+        # Cb ≈ (1 + par_frac)/2 = 0.75 for par_frac=0.5
+        V = containership_volume(L, B, T, 0.5)
+        @test V / (L * B * T) ≈ 0.75 atol=1e-9
+        # Higher par_frac → higher Cb
+        @test containership_volume(L, B, T, 0.8) > containership_volume(L, B, T, 0.5)
+    end
+
+    @testset "Containership body runs in a WaterLily Simulation" begin
+        using WaterLily
+        L_c = 30f0; B_c = 7f0; T_c = 4f0
+        hull_xc = 20f0; hull_yc = 16f0; hull_zc = 16f0
+        hull_map = (x, t) -> SVector(x[1] - hull_xc, x[2] - hull_yc, x[3] - hull_zc)
+        hull = Containership(; L=L_c, B=B_c, T=T_c, par_frac=0.5, map=hull_map)
+        sim = WaterLily.Simulation((48, 32, 32), (1f0, 0f0, 0f0), L_c;
+            T=Float32, body=hull, Δt=0.25f0, ϵ=1, U=1f0)
+        for _ in 1:5
+            WaterLily.mom_step!(sim.flow, sim.pois)
+        end
+        @test isfinite(maximum(abs, sim.flow.u))
+        @test maximum(abs, sim.flow.u) < 5f0
+    end
+
     @testset "Wigley body runs in a WaterLily Simulation" begin
         # End-to-end: build a Simulation with a Wigley body and confirm
         # a few mom_step!s don't blow up. Smoke-level proof that the

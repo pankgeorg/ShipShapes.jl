@@ -3,7 +3,8 @@ module ShipShapes
 using WaterLily
 using StaticArrays
 
-export Wigley, wigley_volume, TabulatedHull, sample_sdf, tabulated_sdf
+export Wigley, wigley_volume, Containership, containership_volume,
+       TabulatedHull, sample_sdf, tabulated_sdf
 
 """
     wigley_sdf(p, L, B, T)
@@ -74,6 +75,83 @@ end
 Analytic displaced-water volume of the Wigley hull: `4 L B T / 9`.
 """
 wigley_volume(L, B, T) = 4 * L * B * T / 9
+
+"""
+    containership_sdf(p, L, B, T, par_frac=0.5)
+
+Approximate signed distance to a containership-style hull: parallel
+mid-body of length `par_frac × L` at full beam B and full draught T,
+linearly tapered to a point at bow and stern. Vertical sides (Cb
+much higher than Wigley's 0.44 — typically 0.65-0.70).
+
+Coordinate frame: midship at origin, x = length, y = beam, z =
+vertical (waterline at z=0, keel at z=-T). Used as a stand-in for
+the Duisburg Test Case (DTC) hull until proper offset data is
+available.
+"""
+@inline function containership_sdf(p, L, B, T, par_frac=0.5)
+    x, y, z = p[1], p[2], p[3]
+    xc = clamp(x, -L/2, L/2)
+    zc = clamp(z, -T, 0)
+    # Plan-view half-beam: full B/2 over the parallel mid-body
+    # |2x/L| ≤ par_frac, linearly tapered outside.
+    s = abs(2*xc / L)
+    if s ≤ par_frac
+        half_beam_x = B/2
+    else
+        # taper from full beam at s=par_frac to 0 at s=1
+        half_beam_x = (B/2) * (1 - s) / (1 - par_frac)
+    end
+    in_box = (-L/2 ≤ x ≤ L/2) & (-T ≤ z ≤ 0)
+    if in_box
+        # SDF inside: distance to the rectangular cross-section
+        # bounded by ±half_beam_x in y and 0..-T in z. Vertical
+        # sides mean the section is a rectangle in y-z.
+        return abs(y) - half_beam_x
+    else
+        y_surf = clamp(y, -half_beam_x, half_beam_x)
+        dx = x - xc
+        dz = z - zc
+        dy = y - y_surf
+        return sqrt(dx^2 + dy^2 + dz^2)
+    end
+end
+
+"""
+    Containership(; L, B, T, par_frac=0.5, map=(x,t)->x)
+
+Containership-style hull (parallel mid-body + linear-tapered ends,
+vertical sides) as a `WaterLily.AutoBody`. Approximation for the
+Duisburg Test Case (DTC) family. Cb ≈ `(1 + par_frac) / 2`, so the
+default `par_frac=0.5` gives Cb ≈ 0.75.
+
+```julia
+hull = Containership(L=355, B=51, T=14.5)
+```
+"""
+function Containership(; L::Real, B::Real, T::Real, par_frac::Real=0.5,
+                         map=(x,t)->x)
+    L_, B_, T_, p_ = float(L), float(B), float(T), float(par_frac)
+    sdf(x, t) = containership_sdf(x, L_, B_, T_, p_)
+    AutoBody(sdf, map)
+end
+
+"""
+    containership_volume(L, B, T, par_frac=0.5)
+
+Analytic displaced-water volume of the containership stand-in:
+parallel midbody of length `par_frac·L` × `B` × `T` plus two
+triangular-prism end-caps of length `(1−par_frac)·L/2` × half-beam
+average × `T`.
+"""
+function containership_volume(L, B, T, par_frac=0.5)
+    L_par = par_frac * L
+    L_end = (1 - par_frac) * L / 2     # each end
+    # midbody = L_par × B × T; each end is a triangular prism with
+    # base L_end and tapering half-beam from B/2 to 0 → volume
+    # per end = (1/2) · L_end · (B/2) · 2 · T = L_end · B/2 · T.
+    L_par * B * T + 2 * (L_end * B / 2 * T)
+end
 
 # ----------------------------------------------------------------------------
 # Tabulated SDF — for hulls without a closed-form distance (DTC, KCS, …)
