@@ -67,6 +67,38 @@ using StaticArrays
         @test isapprox(V_mc, V_analytic; rtol = 0.05)
     end
 
+    @testset "Wigley deck extension (deck_h > 0)" begin
+        L, B, T = 2.5, 0.25, 0.156
+        deck_h = T / 2     # half-draft deck above the waterline
+
+        # With deck_h = 0 we should get the same value as the
+        # 3-arg signature — bit-identical because the deck-z clause
+        # is bypassed.
+        p_keel = SVector(0.0, 0.0, -T/2)
+        @test wigley_sdf(p_keel, L, B, T, 0.0) ≈ wigley_sdf(p_keel, L, B, T) atol=1e-12
+
+        # A point above the original waterline (z=+T/4) at midship,
+        # centreline (y=0): with deck_h=0 it's OUTSIDE (positive),
+        # with deck_h=T/2 it's INSIDE the deck (negative).
+        p_in_deck = SVector(0.0, 0.0, T/4)
+        @test wigley_sdf(p_in_deck, L, B, T, 0.0) > 0           # truncated
+        @test wigley_sdf(p_in_deck, L, B, T, deck_h) < 0       # with deck
+
+        # A point at the side of the deck (y=B at midship, z=+T/4)
+        # should be OUTSIDE even with the deck.
+        p_outside_deck = SVector(0.0, B, T/4)
+        @test wigley_sdf(p_outside_deck, L, B, T, deck_h) > 0
+
+        # Above the deck (z > deck_h) should be OUTSIDE.
+        p_above = SVector(0.0, 0.0, deck_h + 0.1)
+        @test wigley_sdf(p_above, L, B, T, deck_h) > 0
+
+        # Wigley factory carries deck_h through.
+        hull_d = Wigley(L=L, B=B, T=T, deck_h=deck_h)
+        @test hull_d.sdf(p_in_deck, 0.0) < 0
+        @test hull_d.sdf(p_outside_deck, 0.0) > 0
+    end
+
     @testset "Wigley wraps as AutoBody (interface only)" begin
         # We don't import WaterLily here directly to avoid the test runtime
         # depending on KernelAbstractions startup. Just smoke-check that the

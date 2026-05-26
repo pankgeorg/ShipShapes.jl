@@ -7,7 +7,7 @@ export Wigley, wigley_volume, Containership, containership_volume,
        TabulatedHull, sample_sdf, tabulated_sdf
 
 """
-    wigley_sdf(p, L, B, T)
+    wigley_sdf(p, L, B, T, deck_h=0)
 
 Approximate signed distance from point `p::SVector{3}` (in hull-fixed coords,
 midship at origin, waterline at `z=0`, keel at `z=-T`) to the Wigley
@@ -17,55 +17,81 @@ parabolic hull defined by
 y_surface(x,z) = ±(B/2) * (1 - (2x/L)²) * (1 - (z/T)²),  x ∈ [-L/2, L/2], z ∈ [-T, 0]
 ```
 
+When `deck_h > 0`, the hull is extended above z=0 by a vertical-walled
+"deck" of height `deck_h`. The deck cross-section (for z ∈ [0, deck_h])
+is the same parabolic plan-view shape as at the waterline:
+`half_beam(x, z) = (B/2) · (1 - (2x/L)²)`. The deck adds buoyancy
+volume that the hull picks up when pitching out of the waterline —
+essential for metacentric stability in 2-DOF / 6-DOF simulations
+(see `RESULTS-heave-pitch-2dof.md`).
+
 The returned value is a pseudo-SDF: signed (negative inside), zero on the
 surface, and consistent with the geometric normal direction. Magnitude
 is corrected by `WaterLily.AutoBody`'s gradient normalization, so this
 is suitable for use with `AutoBody(wigley_sdf_closure)`.
 """
-@inline function wigley_sdf(p, L, B, T)
+@inline function wigley_sdf(p, L, B, T, deck_h=zero(promote_type(typeof(L), typeof(B), typeof(T))))
     x, y, z = p[1], p[2], p[3]
     xc = clamp(x, -L/2, L/2)
-    zc = clamp(z, -T, 0)
+    zc = clamp(z, -T, zero(z))  # for deck region z > 0, zc clamps to 0
     fx = 1 - (2xc/L)^2          # 1 at midship, 0 at bow/stern
     fz = 1 - (zc/T)^2           # 1 at waterline, 0 at keel
     half_beam = (B/2) * fx * fz
-    in_box = (-L/2 ≤ x ≤ L/2) & (-T ≤ z ≤ 0)
-    if in_box
-        # Eikonal-normalised SDF: divide the y-axis distance to the
-        # surface by |∇half_beam_extended|, where the gradient lives in
-        # all three directions because the surface curves in x and z.
+
+    if -L/2 ≤ x ≤ L/2 && -T ≤ z ≤ 0
+        # Below-waterline parabolic interior: Eikonal-normalised SDF.
         # ∂half_beam/∂x = -2B·x/L² · fz,  ∂half_beam/∂z = -B·z/T² · fx.
         dhdx = -2 * B * xc / (L^2) * fz
         dhdz = -B * zc / (T^2) * fx
         gnorm = sqrt(1 + dhdx^2 + dhdz^2)
         return (abs(y) - half_beam) / gnorm
+    elseif -L/2 ≤ x ≤ L/2 && 0 < z ≤ deck_h && abs(y) ≤ half_beam
+        # Deck interior (vertical-walled prism): true minimum-distance
+        # SDF among the deck's exit surfaces — top face (z = deck_h),
+        # side wall (|y| = half_beam(x)), and the parabolic side
+        # gradient correction so the value matches the below-waterline
+        # SDF smoothly at z = 0.
+        d_top  = deck_h - z
+        dhdx   = -2 * B * xc / (L^2)
+        gnorm  = sqrt(1 + dhdx^2)
+        d_side = (half_beam - abs(y)) / gnorm
+        return -min(d_top, d_side)
     else
+        # Outside body. Closest point is on the box (deck-extended).
+        zc_out = clamp(z, -T, deck_h)
         y_surf = clamp(y, -half_beam, half_beam)
         dx = x - xc
-        dz = z - zc
+        dz = z - zc_out
         dy = y - y_surf
         return sqrt(dx^2 + dy^2 + dz^2)
     end
 end
 
 """
-    Wigley(; L, B, T, map=(x,t)->x)
+    Wigley(; L, B, T, deck_h=0, map=(x,t)->x)
 
 Wigley parabolic hull as a `WaterLily.AutoBody`. Coordinate frame:
 midship at the origin, x along the length, y across the beam, z vertical
 (positive up, waterline at z=0, keel at z=-T).
 
+Pass `deck_h > 0` to add a vertical-walled deck of that height above
+the waterline. The deck shares the waterline plan-view shape and is
+required for any simulation where the hull rotates out of the
+waterline (heave + pitch 2-DOF, seakeeping). With `deck_h = 0`
+(default) the body is identical to the previous truncated form.
+
 Pass `map` to translate / rotate / animate the hull in the world frame.
 
 # Example
 ```julia
-hull = Wigley(L=2.5, B=0.25, T=0.156)
-sim = Simulation((256,64,32), (1.0,0,0), 2.5; body=hull, ν=1e-5)
+hull = Wigley(L=2.5, B=0.25, T=0.156)              # truncated (original)
+hull2 = Wigley(L=2.5, B=0.25, T=0.156, deck_h=0.1) # with deck (2-DOF safe)
 ```
 """
-function Wigley(; L::Real, B::Real, T::Real, map=(x,t)->x)
-    L_, B_, T_ = float(L), float(B), float(T)
-    sdf(x, t) = wigley_sdf(x, L_, B_, T_)
+function Wigley(; L::Real, B::Real, T::Real, deck_h::Real=0,
+                  map=(x,t)->x)
+    L_, B_, T_, d_ = float(L), float(B), float(T), float(deck_h)
+    sdf(x, t) = wigley_sdf(x, L_, B_, T_, d_)
     AutoBody(sdf, map)
 end
 
@@ -80,14 +106,14 @@ wigley_volume(L, B, T) = 4 * L * B * T / 9
     containership_sdf(p, L, B, T, par_frac=0.5)
 
 Approximate signed distance to a containership-style hull: parallel
-mid-body of length `par_frac × L` at full beam B and full draught T,
-linearly tapered to a point at bow and stern. Vertical sides (Cb
-much higher than Wigley's 0.44 — typically 0.65-0.70).
+mid-body of length `par_frac · L` at full beam `B` and full draught `T`,
+linearly tapered to a point at bow and stern, vertical sides.
+Block coefficient `Cb ≈ (1 + par_frac) / 2`; the default `par_frac=0.5`
+gives `Cb ≈ 0.75` (full-form containership).
 
 Coordinate frame: midship at origin, x = length, y = beam, z =
-vertical (waterline at z=0, keel at z=-T). Used as a stand-in for
-the Duisburg Test Case (DTC) hull until proper offset data is
-available.
+vertical (waterline at z=0, keel at z=-T). Stand-in for the Duisburg
+Test Case (DTC) hull until offset data is available.
 """
 @inline function containership_sdf(p, L, B, T, par_frac=0.5)
     x, y, z = p[1], p[2], p[3]
@@ -181,6 +207,14 @@ struct TabulatedHull{T, A<:AbstractArray{T,3}}
     spacing :: SVector{3,T}
 end
 
+"""
+    TabulatedHull(grid, origin, spacing)
+
+Construct a `TabulatedHull` from a pre-computed grid of SDF values
+plus the world-frame origin and uniform spacing of the sample grid.
+`origin` and `spacing` may be any iterable of length 3 — they are
+converted to `SVector{3,T}` matching `eltype(grid)`.
+"""
 function TabulatedHull(grid::AbstractArray{T,3},
                        origin, spacing) where T
     o = SVector{3,T}(origin)
@@ -188,8 +222,17 @@ function TabulatedHull(grid::AbstractArray{T,3},
     TabulatedHull{T, typeof(grid)}(grid, o, s)
 end
 
-# Trilinear interpolation, returning a value with the same type as the
-# input coordinate (so AutoBody / ForwardDiff Duals stay differentiable).
+"""
+    (h::TabulatedHull)(p, t = 0)
+
+Evaluate the tabulated SDF at world-frame point `p`. Trilinear
+interpolation inside the sample box; outside, returns the nearest
+face's tabulated value plus the Euclidean distance back to the box,
+keeping the SDF C0 across the boundary (BDIM-safe). The return type
+promotes with `eltype(p)`, so `ForwardDiff.Dual` inputs propagate
+correctly. The `t` argument is unused but kept for `AutoBody`
+compatibility.
+"""
 @inline function (h::TabulatedHull{T})(p, _t = 0) where T
     nx, ny, nz = size(h.grid)
     Tin = promote_type(eltype(p), T)
