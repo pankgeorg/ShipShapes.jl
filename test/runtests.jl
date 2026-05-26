@@ -202,6 +202,25 @@ using StaticArrays
         @test maximum(abs, sim.flow.u) < 5f0   # well-bounded
     end
 
+    @testset "wigley_sdf gradient with deck (Eikonal in deck region)" begin
+        L, B, T = 3.0, 0.4, 0.3
+        deck_h = T / 2
+        h = 1e-3
+        # Sample inside the deck region (z > 0, |y| < half_beam, x in body)
+        p = SVector(0.0, 0.05, deck_h / 2)   # half-way up the deck
+        fx = (ShipShapes.wigley_sdf(SVector(p[1]+h, p[2], p[3]), L, B, T, deck_h) -
+              ShipShapes.wigley_sdf(SVector(p[1]-h, p[2], p[3]), L, B, T, deck_h)) / (2h)
+        fy = (ShipShapes.wigley_sdf(SVector(p[1], p[2]+h, p[3]), L, B, T, deck_h) -
+              ShipShapes.wigley_sdf(SVector(p[1], p[2]-h, p[3]), L, B, T, deck_h)) / (2h)
+        fz = (ShipShapes.wigley_sdf(SVector(p[1], p[2], p[3]+h), L, B, T, deck_h) -
+              ShipShapes.wigley_sdf(SVector(p[1], p[2], p[3]-h), L, B, T, deck_h)) / (2h)
+        g = sqrt(fx^2 + fy^2 + fz^2)
+        # Inside the deck, SDF = -min(d_top, d_side). Gradient has
+        # magnitude 1 in the dominant direction (whichever surface is
+        # closest) and ≤ 1 along the rest. We require 0.7 ≤ |∇| ≤ 1.2.
+        @test 0.7 ≤ g ≤ 1.2
+    end
+
     @testset "wigley_sdf gradient ≈ 1 (first-order Eikonal)" begin
         # The Eikonal-normalised SDF should have |∇φ| ≈ 1 to first
         # order; second-order curvature terms can push it a few %
