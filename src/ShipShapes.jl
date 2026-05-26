@@ -103,7 +103,7 @@ Analytic displaced-water volume of the Wigley hull: `4 L B T / 9`.
 wigley_volume(L, B, T) = 4 * L * B * T / 9
 
 """
-    containership_sdf(p, L, B, T, par_frac=0.5)
+    containership_sdf(p, L, B, T, par_frac=0.5, deck_h=0)
 
 Approximate signed distance to a containership-style hull: parallel
 mid-body of length `par_frac · L` at full beam `B` and full draught `T`,
@@ -111,54 +111,75 @@ linearly tapered to a point at bow and stern, vertical sides.
 Block coefficient `Cb ≈ (1 + par_frac) / 2`; the default `par_frac=0.5`
 gives `Cb ≈ 0.75` (full-form containership).
 
+When `deck_h > 0`, a vertical-walled deck of that height is added
+above the waterline (same plan-view as the waterline). Required for
+6-DOF rigid-body simulations to provide metacentric restoring
+moments. See R1 (`RESULTS-heave-containership.md`) for the
+motivation.
+
 Coordinate frame: midship at origin, x = length, y = beam, z =
 vertical (waterline at z=0, keel at z=-T). Stand-in for the Duisburg
 Test Case (DTC) hull until offset data is available.
 """
-@inline function containership_sdf(p, L, B, T, par_frac=0.5)
+@inline function containership_sdf(p, L, B, T, par_frac=0.5,
+                                   deck_h=zero(promote_type(typeof(L), typeof(B), typeof(T))))
     x, y, z = p[1], p[2], p[3]
     xc = clamp(x, -L/2, L/2)
-    zc = clamp(z, -T, 0)
-    # Plan-view half-beam: full B/2 over the parallel mid-body
-    # |2x/L| ≤ par_frac, linearly tapered outside.
+    # Plan-view half-beam (same for any z in [-T, deck_h]).
     s = abs(2*xc / L)
-    if s ≤ par_frac
-        half_beam_x = B/2
+    half_beam_x = s ≤ par_frac ? (B/2) :
+        (B/2) * (1 - s) / (1 - par_frac)
+
+    if -L/2 ≤ x ≤ L/2 && -T ≤ z ≤ 0 && abs(y) ≤ half_beam_x
+        # Below-waterline interior: SDF is min-distance to side
+        # walls (vertical), top (z=0 — extends seamlessly into deck
+        # if deck_h > 0), or keel (z=-T).
+        d_side = half_beam_x - abs(y)
+        d_top  = 0.0 - z   # 0 if at waterline
+        d_kel  = z + T     # T at waterline, 0 at keel
+        # Add the deck's contribution: if deck_h > 0, the body
+        # extends above so d_top becomes (deck_h - z) instead of
+        # (0 - z). Use whichever is the body's nearer "top" exit.
+        d_top = deck_h - z
+        return -min(d_side, d_top, d_kel)
+    elseif -L/2 ≤ x ≤ L/2 && 0 < z ≤ deck_h && abs(y) ≤ half_beam_x
+        # Deck interior: same min-distance form, vertical sides
+        # share the same half_beam_x as below the waterline.
+        d_side = half_beam_x - abs(y)
+        d_top  = deck_h - z
+        return -min(d_side, d_top)
     else
-        # taper from full beam at s=par_frac to 0 at s=1
-        half_beam_x = (B/2) * (1 - s) / (1 - par_frac)
-    end
-    in_box = (-L/2 ≤ x ≤ L/2) & (-T ≤ z ≤ 0)
-    if in_box
-        # SDF inside: distance to the rectangular cross-section
-        # bounded by ±half_beam_x in y and 0..-T in z. Vertical
-        # sides mean the section is a rectangle in y-z.
-        return abs(y) - half_beam_x
-    else
+        # Outside body. Clamp to the extended box [-T, deck_h] in z.
+        zc_out = clamp(z, -T, deck_h)
         y_surf = clamp(y, -half_beam_x, half_beam_x)
         dx = x - xc
-        dz = z - zc
+        dz = z - zc_out
         dy = y - y_surf
         return sqrt(dx^2 + dy^2 + dz^2)
     end
 end
 
 """
-    Containership(; L, B, T, par_frac=0.5, map=(x,t)->x)
+    Containership(; L, B, T, par_frac=0.5, deck_h=0, map=(x,t)->x)
 
 Containership-style hull (parallel mid-body + linear-tapered ends,
 vertical sides) as a `WaterLily.AutoBody`. Approximation for the
 Duisburg Test Case (DTC) family. Cb ≈ `(1 + par_frac) / 2`, so the
 default `par_frac=0.5` gives Cb ≈ 0.75.
 
+Pass `deck_h > 0` to add a vertical-walled deck of that height above
+the waterline. Required for 6-DOF rigid-body simulations (heave +
+pitch); see R1 (`RESULTS-heave-containership.md`) and L1 for the
+Wigley counterpart.
+
 ```julia
-hull = Containership(L=355, B=51, T=14.5)
+hull = Containership(L=355, B=51, T=14.5, deck_h=5.0)
 ```
 """
 function Containership(; L::Real, B::Real, T::Real, par_frac::Real=0.5,
-                         map=(x,t)->x)
-    L_, B_, T_, p_ = float(L), float(B), float(T), float(par_frac)
-    sdf(x, t) = containership_sdf(x, L_, B_, T_, p_)
+                         deck_h::Real=0, map=(x,t)->x)
+    L_, B_, T_, p_, d_ = float(L), float(B), float(T), float(par_frac), float(deck_h)
+    sdf(x, t) = containership_sdf(x, L_, B_, T_, p_, d_)
     AutoBody(sdf, map)
 end
 
